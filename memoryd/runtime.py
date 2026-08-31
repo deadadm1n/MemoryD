@@ -10,16 +10,21 @@ from pathlib import Path
 from typing import Any
 
 from .embeddings import EmbeddingProvider, HashEmbeddingProvider, cosine_similarity
+from .beliefs import build_belief_set
+from .cognition import DeterministicObservationAnalyzer, ObservationAnalyzer
 from .entities import extract_entities
 from .models import Memory, RecallResult
+from .prospective import derive_triggers, score_relevance
 from .reflection import propose as reflection_proposals
 from .store import BrainStore
 
 
 class MemoryRuntime:
-    def __init__(self, database: str | Path = "brain.db", *, embedding_provider: EmbeddingProvider | None = None) -> None:
+    def __init__(self, database: str | Path = "brain.db", *, embedding_provider: EmbeddingProvider | None = None,
+                 observation_analyzer: ObservationAnalyzer | None = None) -> None:
         self.store = BrainStore(database)
         self.embedding_provider = embedding_provider or HashEmbeddingProvider()
+        self.observation_analyzer = observation_analyzer or DeterministicObservationAnalyzer()
         self._cache: dict[tuple[str, int], tuple[float, int, dict[str, Any]]] = {}
         self._cache_lock = threading.Lock()
         self._revision = 0
@@ -86,6 +91,8 @@ class MemoryRuntime:
                                    importance=float(importance), metadata=record_metadata)
         self.store.add_entities(memory.id, ((name, "concept") for name in entities))
         self.store.upsert_embedding(memory.id, self.embedding_provider.name, self.embedding_provider.embed(memory.content))
+        triggers = derive_triggers(memory)
+        self.store.add_prospective_triggers(memory.id, ((item.phrase, item.category, item.weight) for item in triggers))
         self.store.record_event("memory_created", memory.id, {"kind": kind, "source": source, "entities": entities})
         state = self.extract_state(content, record_metadata) if kind == "state" or isinstance(record_metadata.get("state"), dict) else None
         replaced_by_state = None
@@ -105,6 +112,26 @@ class MemoryRuntime:
             self.store.record_event("state_replaced", replaced_by_state, {"by": memory.id})
         self._invalidate_cache()
         return memory
+
+    def observe(self, content: str, *, actor: str | None = None, context: dict[str, Any] | None = None,
+                source: str = "observation") -> dict[str, Any]:
+        """Let a pluggable cognition layer decide what an experience is worth keeping.
+
+        The default analyzer is intentionally conservative: ordinary chatter is
+        ignored, while explicit decisions, state changes, and questions become
+        small durable memories with observation provenance.
+        """
+        candidates = self.observation_analyzer.analyze(content, actor=actor, context=context)
+        stored = []
+        for candidate in candidates:
+            metadata: dict[str, Any] = {"observation": {"actor": candidate.actor, "context": candidate.context}}
+            if candidate.state:
+                metadata["state"] = candidate.state
+            memory = self.remember(candidate.content, source=source, kind=candidate.kind,
+                                   confidence=candidate.confidence, importance=candidate.importance, metadata=metadata)
+            stored.append(memory.to_dict())
+        self.store.record_event("observation_processed", payload={"candidate_count": len(candidates), "stored_ids": [item["id"] for item in stored]})
+        return {"stored": stored, "ignored": not stored, "candidate_count": len(candidates)}
 
     def recall(self, query: str, *, limit: int = 10, kind: str | None = None) -> list[RecallResult]:
         candidate_limit = max(limit * 4, 20)
@@ -151,7 +178,7 @@ class MemoryRuntime:
                 return deepcopy(cached[2])
         # A conservative four-characters-per-token estimate keeps output below the requested budget.
         available, selected, seen_tokens = max(400, budget * 4), [], []
-        sections: dict[str, list[dict[str, Any]]] = {"current_state": [], "decisions": [], "relevant_memories": [], "open_questions": []}
+        sections: dict[str, list[dict[str, Any]]] = {"current_state": [], "decisions": [], "relevant_memories": [], "open_questions": [], "likely_relevant_soon": []}
         for result in self.recall(query, limit=40):
             item = result.memory
             tokens = set(re.findall(r"[a-z0-9_]+", item.content.casefold()))
@@ -166,6 +193,28 @@ class MemoryRuntime:
             elif item.kind == "speculation" or "open question" in item.content.casefold() or "?" in item.content: section = "open_questions"
             else: section = "relevant_memories"
             sections[section].append(packed)
+        selected_ids = {item["id"] for item in selected}
+        prospective = sorted(((memory, score_relevance(memory, query)) for memory in self.store.prospective_memories()),
+                             key=lambda item: item[1].score, reverse=True)
+        for memory, match in prospective[:8]:
+            if match.score < .15:
+                continue
+            if memory.id in selected_ids:
+                existing = next(item for item in selected if item["id"] == memory.id)
+                existing["prospective_score"] = match.score
+                existing["triggers"] = [item.phrase for item in match.matched]
+                for memories in sections.values():
+                    if existing in memories:
+                        memories.remove(existing)
+                sections["likely_relevant_soon"].append(existing)
+                continue
+            rendered = f"- [{memory.kind}, anticipated relevance {match.score:.2f}] {memory.content}"
+            if len(rendered) > available:
+                continue
+            packed = {"id": memory.id, "content": memory.content, "kind": memory.kind, "confidence": memory.confidence,
+                      "prospective_score": match.score, "triggers": [item.phrase for item in match.matched]}
+            selected.append(packed); selected_ids.add(memory.id); available -= len(rendered)
+            sections["likely_relevant_soon"].append(packed)
         lines = []
         for title, memories in sections.items():
             if memories:
@@ -232,11 +281,33 @@ class MemoryRuntime:
     def events(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return self.store.events(limit)
 
+    def beliefs(self) -> dict[str, Any]:
+        return build_belief_set(self.store.recent(10_000))
+
+    def explain(self, *, subject: str | None = None, key: str | None = None, statement: str | None = None) -> dict[str, Any]:
+        """Explain one direct belief with its exact source memories.
+
+        Callers must name a state subject/key or an exact decision statement;
+        MemoryD intentionally refuses to invent a causal explanation from a
+        fuzzy query.
+        """
+        if not ((subject and key) or statement):
+            raise ValueError("provide subject and key, or an exact statement")
+        belief_set = self.beliefs()
+        target = next((belief for belief in belief_set["beliefs"]
+                       if (subject and key and belief.get("subject") == subject and belief.get("key") == key)
+                       or (statement and belief.get("statement") == statement)), None)
+        if not target:
+            raise KeyError("no direct active belief matches the requested explanation")
+        evidence = [self.get(memory_id) for memory_id in target["evidence_ids"]]
+        return {"belief": target, "explanation": "This is a direct active assertion; inspect the evidence records below.",
+                "evidence": [item for item in evidence if item]}
+
     def reflect(self, *, limit: int = 200) -> dict[str, Any]:
         """Produce reviewable reflection proposals without changing the brain."""
         result = reflection_proposals(self.store.recent(limit), limit)
         self.store.record_event("reflection_proposed", payload={"proposal_count": len(result["proposals"]), "memory_count": result["memory_count"]})
         return result
 
-    def state(self, *, subject: str | None = None, key: str | None = None, history: bool = False) -> list[dict[str, Any]]:
-        return self.store.state(subject, key, history)
+    def state(self, *, subject: str | None = None, key: str | None = None, history: bool = False, at: str | None = None) -> list[dict[str, Any]]:
+        return self.store.state(subject, key, history, at)

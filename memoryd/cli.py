@@ -36,6 +36,10 @@ def main() -> None:
     remember.add_argument("--importance", type=float, default=.5)
     remember.add_argument("--metadata")
     remember.add_argument("--supersedes")
+    observe = commands.add_parser("observe", help="analyze an experience and store only durable candidates")
+    observe.add_argument("content")
+    observe.add_argument("--actor")
+    observe.add_argument("--context", help="JSON object describing the experience context")
     recall = commands.add_parser("recall", help="retrieve relevant memories")
     recall.add_argument("query")
     recall.add_argument("--limit", type=int, default=10)
@@ -50,6 +54,7 @@ def main() -> None:
     state.add_argument("--subject")
     state.add_argument("--key")
     state.add_argument("--history", action="store_true")
+    state.add_argument("--at", help="ISO-8601 timestamp for historical state lookup")
     reflect = commands.add_parser("reflect", help="produce reviewable memory reflection proposals")
     reflect.add_argument("--limit", type=int, default=200)
     backup_command = commands.add_parser("backup", help="create a consistent SQLite backup without overwriting")
@@ -59,6 +64,11 @@ def main() -> None:
     import_command = commands.add_parser("import", help="create a new database from a validated JSON export")
     import_command.add_argument("source")
     commands.add_parser("doctor", help="run read-only brain integrity and consistency checks")
+    commands.add_parser("beliefs", help="show direct evidence-backed current beliefs")
+    explain = commands.add_parser("explain", help="show the evidence for one direct belief")
+    explain.add_argument("--subject")
+    explain.add_argument("--key")
+    explain.add_argument("--statement")
     commands.add_parser("timeline", help="show recent history")
     args = parser.parse_args()
     if args.command == "import":
@@ -77,12 +87,16 @@ def main() -> None:
         print(json.dumps(runtime.remember(args.content, source=args.source, kind=args.kind,
               confidence=args.confidence, importance=args.importance, metadata=_metadata(args.metadata),
               supersedes=args.supersedes).to_dict(), indent=2)); return
+    if args.command == "observe":
+        print(json.dumps(runtime.observe(args.content, actor=args.actor, context=_metadata(args.context)), indent=2)); return
     if args.command == "recall": print(json.dumps([r.to_dict() for r in runtime.recall(args.query, limit=args.limit)], indent=2)); return
     if args.command == "context": print(json.dumps(runtime.context(args.query, budget=args.budget), indent=2)); return
     if args.command == "consolidate": print(json.dumps(runtime.consolidate(limit=args.limit), indent=2)); return
     if args.command == "events": print(json.dumps(runtime.events(limit=args.limit), indent=2)); return
-    if args.command == "state": print(json.dumps(runtime.state(subject=args.subject, key=args.key, history=args.history), indent=2)); return
+    if args.command == "state": print(json.dumps(runtime.state(subject=args.subject, key=args.key, history=args.history, at=args.at), indent=2)); return
     if args.command == "reflect": print(json.dumps(runtime.reflect(limit=args.limit), indent=2)); return
+    if args.command == "beliefs": print(json.dumps(runtime.beliefs(), indent=2)); return
+    if args.command == "explain": print(json.dumps(runtime.explain(subject=args.subject, key=args.key, statement=args.statement), indent=2)); return
     print(json.dumps(runtime.timeline(), indent=2))
 
 

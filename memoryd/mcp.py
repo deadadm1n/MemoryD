@@ -56,10 +56,19 @@ TOOLS = [
      "inputSchema": _schema({"limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50}}),
      "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
     {"name": "memory_state", "title": "Current state", "description": "Read current materialized state facts, or their history, by subject and key.",
-     "inputSchema": _schema({"subject": {"type": "string"}, "key": {"type": "string"}, "history": {"type": "boolean", "default": False}}),
+     "inputSchema": _schema({"subject": {"type": "string"}, "key": {"type": "string"}, "history": {"type": "boolean", "default": False}, "at": {"type": "string", "description": "ISO-8601 timestamp for historical lookup"}}),
      "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
     {"name": "memory_reflect", "title": "Reflection proposals", "description": "Generate reviewable consolidation, open-question, and duplicate proposals without changing memory.",
      "inputSchema": _schema({"limit": {"type": "integer", "minimum": 2, "maximum": 1000, "default": 200}}),
+     "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
+    {"name": "memory_observe", "title": "Observe experience", "description": "Analyze an experience and store only conservative durable candidates; ordinary chatter is ignored.",
+     "inputSchema": _schema({"content": {"type": "string"}, "actor": {"type": "string"}, "context": {"type": "object"}, "source": {"type": "string", "default": "observation"}}, ["content"]),
+     "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
+    {"name": "memory_beliefs", "title": "Evidence-backed beliefs", "description": "Read conservative direct beliefs and unresolved conflicts with their source memory IDs.",
+     "inputSchema": _schema({}),
+     "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
+    {"name": "memory_explain", "title": "Explain belief", "description": "Return one direct belief and the exact active memories that support it.",
+     "inputSchema": _schema({"subject": {"type": "string"}, "key": {"type": "string"}, "statement": {"type": "string"}}),
      "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
 ]
 
@@ -98,6 +107,9 @@ class MCPServer:
             "memory_events": lambda **kw: {"events": self.runtime.events(**kw)},
             "memory_state": lambda **kw: {"state": self.runtime.state(**kw)},
             "memory_reflect": lambda **kw: self.runtime.reflect(**kw),
+            "memory_observe": lambda **kw: self.runtime.observe(**kw),
+            "memory_beliefs": lambda **kw: self.runtime.beliefs(),
+            "memory_explain": lambda **kw: self.runtime.explain(**kw),
         }
         if name not in handlers:
             raise LookupError(f"unknown tool: {name}")
@@ -116,7 +128,7 @@ class MCPServer:
         if method == "initialize":
             self.initialized = False
             return self._response(message_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}},
-                                                "serverInfo": {"name": "memoryd", "version": "0.4.0"}})
+                                                "serverInfo": {"name": "memoryd", "version": "0.5.0"}})
         if method == "ping":
             return self._response(message_id, {})
         if not self.initialized:

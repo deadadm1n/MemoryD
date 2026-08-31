@@ -34,8 +34,16 @@ class MemoryHandler(BaseHTTPRequestHandler):
         if path == "/health": self._json({"status": "ok", "stats": self.runtime.store.stats()}); return
         if path == "/timeline": self._json({"memories": self.runtime.timeline(limit=int(params.get("limit", 50)))}); return
         if path == "/events": self._json({"events": self.runtime.events(limit=int(params.get("limit", 50)))}); return
+        if path == "/beliefs": self._json(self.runtime.beliefs()); return
+        if path == "/explain":
+            try:
+                self._json(self.runtime.explain(subject=params.get("subject") or None, key=params.get("key") or None,
+                    statement=params.get("statement") or None))
+            except (ValueError, KeyError) as exc:
+                self._json({"error": str(exc)}, 400)
+            return
         if path == "/state": self._json({"state": self.runtime.state(subject=params.get("subject") or None,
-            key=params.get("key") or None, history=params.get("history", "false").lower() == "true")}); return
+            key=params.get("key") or None, history=params.get("history", "false").lower() == "true", at=params.get("at") or None)}); return
         if path.startswith("/memories/"):
             item = self.runtime.get(path.rsplit("/", 1)[-1])
             self._json(item or {"error": "not found"}, 200 if item else 404); return
@@ -47,6 +55,9 @@ class MemoryHandler(BaseHTTPRequestHandler):
             if self.path == "/remember":
                 memory = self.runtime.remember(**body)
                 self._json(memory.to_dict(), HTTPStatus.CREATED); return
+            if self.path == "/observe":
+                content = body.pop("content")
+                self._json(self.runtime.observe(content, **body), HTTPStatus.CREATED); return
             if self.path == "/recall":
                 query = body.pop("query")
                 self._json({"results": [r.to_dict() for r in self.runtime.recall(query, **body)]}); return

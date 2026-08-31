@@ -117,15 +117,32 @@ class BrainStore:
                     memory_id TEXT NOT NULL REFERENCES memories(id),
                     is_current INTEGER NOT NULL DEFAULT 1 CHECK(is_current IN (0, 1)),
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    valid_from TEXT,
+                    valid_until TEXT
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS state_facts_current_idx
                     ON state_facts(subject, state_key) WHERE is_current = 1;
                 CREATE INDEX IF NOT EXISTS state_facts_history_idx
                     ON state_facts(subject, state_key, created_at DESC);
+                CREATE TABLE IF NOT EXISTS prospective_triggers (
+                    memory_id TEXT NOT NULL REFERENCES memories(id),
+                    phrase TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    weight REAL NOT NULL CHECK(weight >= 0 AND weight <= 1),
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(memory_id, phrase, category)
+                );
+                CREATE INDEX IF NOT EXISTS prospective_triggers_phrase_idx ON prospective_triggers(phrase);
             """)
-        conn.execute("INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('schema_version', '4')")
-        conn.execute("PRAGMA user_version = 4")
+        # Additive migrations keep an older portable brain readable in place.
+        existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(state_facts)")}
+        for name in ("valid_from", "valid_until"):
+            if name not in existing_columns:
+                conn.execute(f"ALTER TABLE state_facts ADD COLUMN {name} TEXT")
+        conn.execute("UPDATE state_facts SET valid_from = created_at WHERE valid_from IS NULL")
+        conn.execute("INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('schema_version', '6')")
+        conn.execute("PRAGMA user_version = 6")
         conn.commit()
 
     @staticmethod
@@ -256,6 +273,17 @@ class BrainStore:
                 WHERE e.provider = ? AND m.status = 'active'""", (provider,)).fetchall()
         return [(self._memory(row), json.loads(row["vector"])) for row in rows]
 
+    def add_prospective_triggers(self, memory_id: str, triggers: Iterable[tuple[str, str, float]]) -> None:
+        with self.connection() as conn:
+            conn.executemany("""INSERT OR IGNORE INTO prospective_triggers(memory_id, phrase, category, weight, created_at)
+                VALUES (?, ?, ?, ?, ?)""", [(memory_id, phrase, category, weight, now()) for phrase, category, weight in triggers])
+
+    def prospective_memories(self) -> list[Memory]:
+        with self.connection() as conn:
+            rows = conn.execute("""SELECT DISTINCT m.* FROM prospective_triggers p
+                JOIN memories m ON m.id = p.memory_id WHERE m.status = 'active'""").fetchall()
+        return [self._memory(row) for row in rows]
+
     def record_event(self, event_type: str, memory_id: str | None = None, payload: dict[str, Any] | None = None) -> None:
         with self.connection() as conn:
             conn.execute("INSERT INTO events(id, event_type, memory_id, payload, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -272,15 +300,18 @@ class BrainStore:
         with self.connection() as conn:
             prior = conn.execute("""SELECT memory_id FROM state_facts
                 WHERE subject = ? AND state_key = ? AND is_current = 1""", (subject, state_key)).fetchone()
-            conn.execute("""UPDATE state_facts SET is_current = 0, updated_at = ?
-                WHERE subject = ? AND state_key = ? AND is_current = 1""", (timestamp, subject, state_key))
-            conn.execute("""INSERT INTO state_facts(id, subject, state_key, value, memory_id, is_current, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 1, ?, ?)""", (str(uuid.uuid4()), subject, state_key, value, memory_id, timestamp, timestamp))
+            conn.execute("""UPDATE state_facts SET is_current = 0, updated_at = ?, valid_until = ?
+                WHERE subject = ? AND state_key = ? AND is_current = 1""", (timestamp, timestamp, subject, state_key))
+            conn.execute("""INSERT INTO state_facts(id, subject, state_key, value, memory_id, is_current, created_at, updated_at, valid_from, valid_until)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, NULL)""", (str(uuid.uuid4()), subject, state_key, value, memory_id, timestamp, timestamp, timestamp))
         return prior["memory_id"] if prior else None
 
-    def state(self, subject: str | None = None, state_key: str | None = None, include_history: bool = False) -> list[dict[str, Any]]:
+    def state(self, subject: str | None = None, state_key: str | None = None, include_history: bool = False, at: str | None = None) -> list[dict[str, Any]]:
         clauses, params = [], []
-        if not include_history:
+        if at:
+            clauses.append("f.valid_from <= ? AND (f.valid_until IS NULL OR f.valid_until > ?)")
+            params.extend((at, at))
+        elif not include_history:
             clauses.append("f.is_current = 1")
         if subject:
             clauses.append("f.subject = ?"); params.append(subject)

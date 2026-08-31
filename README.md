@@ -26,6 +26,24 @@ Small, relevant context sent to the next agent
 
 The brain is one portable SQLite file. Move it to another machine, connect a different model, and the ongoing work does not have to start over.
 
+## Virtual memory for AI
+
+An LLM has a limited context window; a life or long-running project does not. MemoryD acts as a context pager: it compiles a small, situation-aware working set from a much larger durable mind.
+
+```text
+LLM context window (conscious working memory)
+                    ↑
+      MemoryD context compiler
+        ├─ current state and beliefs
+        ├─ relevant decisions and history
+        ├─ evidence and temporal conflict resolution
+        └─ prospective cues: "this may matter now"
+                    ↑
+      portable brain.db
+```
+
+The point is not to return ten search results. The point is to surface the right knowledge, including a past constraint or failure the agent did not know to ask about.
+
 ## What it does today
 
 - Stores typed memories: decisions, state, procedures, semantic facts, and speculation.
@@ -33,7 +51,11 @@ The brain is one portable SQLite file. Move it to another machine, connect a dif
 - Builds compact, structured agent context: current state, decisions, relevant memories, and open questions.
 - Preserves history with `supersedes` and `derived_from` provenance links.
 - Materializes current state while keeping prior values available as history.
+- Supports time-aware state queries: what is true now, what was true at a time, and why the runtime believes it.
 - Extracts entities and surfaces related memories automatically.
+- Observes experiences through a pluggable, conservative cognition layer; ordinary chatter is ignored.
+- Generates prospective triggers so a memory can reappear when a future situation resembles its likely relevance.
+- Derives conservative beliefs from direct active assertions, with exact evidence IDs and explanations.
 - Supports review-first reflection and explicit, non-destructive consolidation.
 - Runs as a CLI, REST daemon, MCP server, and small read-only local inspector.
 - Includes health checks, online SQLite backup, validated JSON export/import, and a fixed evaluation corpus.
@@ -90,7 +112,8 @@ The server provides:
 memory_remember     memory_recall       memory_context
 memory_get          memory_link         memory_timeline
 memory_forget       memory_state        memory_events
-memory_consolidate  memory_reflect
+memory_consolidate  memory_reflect      memory_observe
+memory_beliefs      memory_explain
 ```
 
 Write tools are explicit. `memory_reflect` only proposes possible consolidation, open-question, or duplicate reviews; it never mutates the brain.
@@ -106,6 +129,14 @@ memoryd --database brain.db remember "MCP is the primary agent interface." --kin
 memoryd --database brain.db remember "Open question: benchmark a production local embedding model." --kind speculation --confidence .60
 ```
 
+### Observe an experience
+
+Agents can submit an experience instead of hand-constructing every memory. The built-in analyzer only stores clear decisions, state changes, and questions; ordinary chatter is ignored. A model-backed analyzer can be plugged in later without changing the calling API.
+
+```powershell
+memoryd --database brain.db observe "MemoryD.database = SQLite." --actor Doug --context '{"project":"MemoryD"}'
+```
+
 ### Maintain current state
 
 Use a state memory when an agent needs a reliable answer to "what is true now?" A later value for the same subject and key automatically retains the old source as historical evidence.
@@ -113,6 +144,7 @@ Use a state memory when an agent needs a reliable answer to "what is true now?" 
 ```powershell
 memoryd --database brain.db remember "MemoryD: stage = hardening." --kind state
 memoryd --database brain.db state --subject MemoryD --key stage
+memoryd --database brain.db state --subject MemoryD --key stage --at 2026-08-31T12:00:00+00:00
 ```
 
 For arbitrary keys, make the state assignment explicit in metadata:
@@ -140,6 +172,17 @@ memoryd --database brain.db context "Help continue the MemoryD project" --budget
 
 `context` returns structured JSON plus prompt-ready text. It is intended to give an agent the relevant working set, not an ocean of history.
 
+It also includes `likely_relevant_soon`: memories selected by prospective triggers in addition to direct retrieval.
+
+### Inspect beliefs and evidence
+
+Beliefs are conservative views over direct active state and decision assertions. MemoryD does not manufacture a conclusion from weak or conflicting evidence.
+
+```powershell
+memoryd --database brain.db beliefs
+memoryd --database brain.db explain --subject MemoryD --key database
+```
+
 ## REST API
 
 ```text
@@ -147,7 +190,9 @@ POST /remember       POST /recall        POST /context
 POST /link           POST /consolidate   POST /reflect
 POST /forget/:id
 GET  /memories/:id   GET  /timeline      GET  /state
-GET  /events         GET  /health
+GET  /events         GET  /beliefs       GET  /explain
+GET  /health
+POST /observe
 ```
 
 ## Inspect, back up, and move a brain

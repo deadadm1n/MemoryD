@@ -13,8 +13,8 @@ def test_schema_settings_and_deduplication(tmp_path):
     assert runtime.store.stats()["memories"] == 1
     assert runtime.store.get(first.id).access_count == 1
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
-        assert connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()[0] == "4"
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()[0] == "6"
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
 
 
@@ -70,6 +70,7 @@ def test_state_fact_replaces_current_value_and_keeps_history(tmp_path):
     assert [(item["value"], item["memory_id"]) for item in current] == [("PostgreSQL", second.id)]
     history = runtime.state(subject="Memory Runtime", key="database", history=True)
     assert {item["value"] for item in history} == {"SQLite", "PostgreSQL"}
+    assert next(item for item in history if item["value"] == "SQLite")["valid_until"]
     assert runtime.store.get(first.id).status == "superseded"
     assert any(item["relation"] == "supersedes" and item["to_id"] == first.id
                for item in runtime.get(second.id)["relationships"])

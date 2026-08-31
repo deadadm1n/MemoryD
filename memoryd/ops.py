@@ -17,7 +17,7 @@ from .store import BrainStore
 
 FORMAT = "memoryd-export"
 FORMAT_VERSION = 1
-TABLES = ("memories", "links", "entities", "memory_entities", "embeddings", "events", "state_facts")
+TABLES = ("memories", "links", "entities", "memory_entities", "embeddings", "events", "state_facts", "prospective_triggers")
 _REQUIRED: dict[str, set[str]] = {
     "memories": {"id", "content", "kind", "source", "confidence", "importance", "strength", "status", "created_at", "updated_at", "accessed_at", "access_count", "metadata"},
     "links": {"id", "from_id", "to_id", "relation", "created_at", "metadata"},
@@ -25,7 +25,8 @@ _REQUIRED: dict[str, set[str]] = {
     "memory_entities": {"memory_id", "entity_id", "created_at"},
     "embeddings": {"memory_id", "provider", "dimensions", "vector", "created_at"},
     "events": {"id", "event_type", "memory_id", "payload", "created_at"},
-    "state_facts": {"id", "subject", "state_key", "value", "memory_id", "is_current", "created_at", "updated_at"},
+    "state_facts": {"id", "subject", "state_key", "value", "memory_id", "is_current", "created_at", "updated_at", "valid_from", "valid_until"},
+    "prospective_triggers": {"memory_id", "phrase", "category", "weight", "created_at"},
 }
 
 
@@ -151,12 +152,18 @@ def _validate(payload: Any) -> dict[str, list[dict[str, Any]]]:
         _json_object(row["payload"], "events.payload")
     current: set[tuple[str, str]] = set()
     for row in tables["state_facts"]:
-        for field in ("id", "subject", "state_key", "value", "memory_id", "created_at", "updated_at"): _require_string(row, field, "state_facts")
+        for field in ("id", "subject", "state_key", "value", "memory_id", "created_at", "updated_at", "valid_from"): _require_string(row, field, "state_facts")
+        _require_string(row, "valid_until", "state_facts", nullable=True)
         if row["memory_id"] not in ids: raise ImportValidationError("state_facts reference an unknown memory")
         if row["is_current"] not in (0, 1): raise ImportValidationError("state_facts.is_current must be 0 or 1")
         pair = (row["subject"], row["state_key"])
         if row["is_current"] and pair in current: raise ImportValidationError("state_facts has duplicate current facts")
         if row["is_current"]: current.add(pair)
+    for row in tables["prospective_triggers"]:
+        if row["memory_id"] not in ids: raise ImportValidationError("prospective_triggers reference an unknown memory")
+        for field in ("phrase", "category", "created_at"): _require_string(row, field, "prospective_triggers")
+        if not isinstance(row["weight"], (int, float)) or isinstance(row["weight"], bool) or not math.isfinite(row["weight"]) or not 0 <= row["weight"] <= 1:
+            raise ImportValidationError("prospective_triggers.weight must be a finite number between 0 and 1")
     return tables
 
 
@@ -185,7 +192,7 @@ def import_json(source: str | Path, database: str | Path) -> Path:
     try:
         conn = store.connection()
         with conn:
-            for table in ("memories", "entities", "links", "memory_entities", "embeddings", "events", "state_facts"):
+            for table in ("memories", "entities", "links", "memory_entities", "embeddings", "events", "state_facts", "prospective_triggers"):
                 rows = tables[table]
                 if not rows: continue
                 columns = sorted(_REQUIRED[table])

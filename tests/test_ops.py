@@ -34,6 +34,8 @@ def test_export_import_round_trip_preserves_graph_state_entities_and_events(tmp_
     assert restored.get(current.id)["content"] == "Project: database = PostgreSQL."
     assert any(link["relation"] == "supports" and link["to_id"] == other.id for link in restored.get(current.id)["relationships"])
     assert restored.state(subject="Project", key="database")[0]["memory_id"] == current.id
+    history = restored.state(subject="Project", key="database", history=True)
+    assert any(fact["value"] == "SQLite" and fact["valid_until"] for fact in history)
     assert restored.store.entity_related(current.id)
     assert restored.events()
     assert restored.recall("PostgreSQL", limit=3)

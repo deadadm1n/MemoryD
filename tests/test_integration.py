@@ -126,7 +126,7 @@ def test_mcp_stdio_lifecycle_and_all_memory_tools(tmp_path):
     assert [reply["id"] for reply in replies] == [1, 2, 3, 4]
     assert {tool["name"] for tool in replies[1]["result"]["tools"]} == {
         "memory_remember", "memory_recall", "memory_context", "memory_get", "memory_link", "memory_timeline", "memory_forget",
-        "memory_consolidate", "memory_events", "memory_state", "memory_reflect",
+        "memory_consolidate", "memory_events", "memory_state", "memory_reflect", "memory_observe", "memory_beliefs", "memory_explain",
     }
     first_id = replies[2]["result"]["structuredContent"]["id"]
     second_id = replies[3]["result"]["structuredContent"]["id"]
@@ -207,12 +207,18 @@ def test_state_contracts_over_rest_mcp_and_cli(tmp_path):
         assert status == 200 and {fact["value"] for fact in history["state"]} == {"SQLite", "PostgreSQL"}
         status, reflection = http_json(port, "POST", "/reflect", {"limit": 10})
         assert status == 200 and reflection["review_required"] is True
+        status, observation = http_json(port, "POST", "/observe", {"content": "We decided to keep PostgreSQL for the next test.", "actor": "Doug"})
+        assert status == 201 and observation["stored"]
+        status, beliefs = http_json(port, "GET", "/beliefs")
+        assert status == 200 and beliefs["beliefs"]
 
     requests = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}},
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "memory_state", "arguments": {"subject": "Memory Runtime", "key": "database"}}},
         {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "memory_reflect", "arguments": {"limit": 10}}},
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "memory_beliefs", "arguments": {}}},
+        {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "memory_explain", "arguments": {"subject": "Memory Runtime", "key": "database"}}},
     ]
     stdin, stdout = io.StringIO("\n".join(json.dumps(item) for item in requests) + "\n"), io.StringIO()
     serve_stdio(MemoryRuntime(database), stdin, stdout)
@@ -220,12 +226,18 @@ def test_state_contracts_over_rest_mcp_and_cli(tmp_path):
     assert mcp_state["result"]["structuredContent"]["state"][0]["value"] == "PostgreSQL"
     mcp_reflection = [json.loads(line) for line in stdout.getvalue().splitlines()][2]
     assert mcp_reflection["result"]["structuredContent"]["review_required"] is True
+    mcp_beliefs = [json.loads(line) for line in stdout.getvalue().splitlines()][3]
+    assert mcp_beliefs["result"]["structuredContent"]["beliefs"]
+    mcp_explanation = [json.loads(line) for line in stdout.getvalue().splitlines()][4]
+    assert mcp_explanation["result"]["structuredContent"]["evidence"]
 
     cli = [sys.executable, "-m", "memoryd.cli", "--database", str(database), "state", "--subject", "Memory Runtime", "--key", "database"]
     result = subprocess.run(cli, check=True, capture_output=True, text=True)
     assert json.loads(result.stdout)[0]["value"] == "PostgreSQL"
     reflection = subprocess.run([sys.executable, "-m", "memoryd.cli", "--database", str(database), "reflect"], check=True, capture_output=True, text=True)
     assert json.loads(reflection.stdout)["review_required"] is True
+    observation = subprocess.run([sys.executable, "-m", "memoryd.cli", "--database", str(database), "observe", "Open question: when should we ship?"], check=True, capture_output=True, text=True)
+    assert json.loads(observation.stdout)["stored"]
 
 
 def test_cli_doctor_backup_export_and_import_round_trip(tmp_path):
