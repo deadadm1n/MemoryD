@@ -134,6 +134,15 @@ class BrainStore:
                     PRIMARY KEY(memory_id, phrase, category)
                 );
                 CREATE INDEX IF NOT EXISTS prospective_triggers_phrase_idx ON prospective_triggers(phrase);
+                CREATE TABLE IF NOT EXISTS branch_metadata (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    kind TEXT NOT NULL CHECK(kind IN ('snapshot', 'fork')),
+                    name TEXT NOT NULL,
+                    branch_id TEXT NOT NULL UNIQUE,
+                    parent_branch_id TEXT,
+                    base_memory_ids TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                );
             """)
         # Additive migrations keep an older portable brain readable in place.
         existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(state_facts)")}
@@ -141,8 +150,8 @@ class BrainStore:
             if name not in existing_columns:
                 conn.execute(f"ALTER TABLE state_facts ADD COLUMN {name} TEXT")
         conn.execute("UPDATE state_facts SET valid_from = created_at WHERE valid_from IS NULL")
-        conn.execute("INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('schema_version', '6')")
-        conn.execute("PRAGMA user_version = 6")
+        conn.execute("INSERT OR REPLACE INTO schema_metadata(key, value) VALUES ('schema_version', '7')")
+        conn.execute("PRAGMA user_version = 7")
         conn.commit()
 
     @staticmethod

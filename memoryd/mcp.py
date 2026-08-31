@@ -70,6 +70,15 @@ TOOLS = [
     {"name": "memory_explain", "title": "Explain belief", "description": "Return one direct belief and the exact active memories that support it.",
      "inputSchema": _schema({"subject": {"type": "string"}, "key": {"type": "string"}, "statement": {"type": "string"}}),
      "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
+    {"name": "memory_snapshot", "title": "Create snapshot", "description": "Create a named, non-overwriting SQLite snapshot from this brain.",
+     "inputSchema": _schema({"name": {"type": "string"}, "destination": {"type": "string"}}, ["name", "destination"]),
+     "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
+    {"name": "memory_fork", "title": "Create fork", "description": "Create an isolated writable brain from a MemoryD snapshot.",
+     "inputSchema": _schema({"snapshot_database": {"type": "string"}, "name": {"type": "string"}, "destination": {"type": "string"}}, ["snapshot_database", "name", "destination"]),
+     "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
+    {"name": "memory_merge", "title": "Merge fork", "description": "Merge new fork knowledge into this brain; conflicting current state remains unchanged and is reported.",
+     "inputSchema": _schema({"fork_database": {"type": "string"}}, ["fork_database"]),
+     "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
 ]
 
 
@@ -110,6 +119,9 @@ class MCPServer:
             "memory_observe": lambda **kw: self.runtime.observe(**kw),
             "memory_beliefs": lambda **kw: self.runtime.beliefs(),
             "memory_explain": lambda **kw: self.runtime.explain(**kw),
+            "memory_snapshot": lambda **kw: self.runtime.snapshot(**kw),
+            "memory_fork": lambda **kw: self.runtime.fork(**kw),
+            "memory_merge": lambda **kw: self.runtime.merge(**kw),
         }
         if name not in handlers:
             raise LookupError(f"unknown tool: {name}")
@@ -128,7 +140,7 @@ class MCPServer:
         if method == "initialize":
             self.initialized = False
             return self._response(message_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}},
-                                                "serverInfo": {"name": "memoryd", "version": "0.5.0"}})
+                                                "serverInfo": {"name": "memoryd", "version": "0.6.0"}})
         if method == "ping":
             return self._response(message_id, {})
         if not self.initialized:

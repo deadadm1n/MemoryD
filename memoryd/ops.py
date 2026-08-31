@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +19,7 @@ from .store import BrainStore
 
 FORMAT = "memoryd-export"
 FORMAT_VERSION = 1
-TABLES = ("memories", "links", "entities", "memory_entities", "embeddings", "events", "state_facts", "prospective_triggers")
+TABLES = ("memories", "links", "entities", "memory_entities", "embeddings", "events", "state_facts", "prospective_triggers", "branch_metadata")
 _REQUIRED: dict[str, set[str]] = {
     "memories": {"id", "content", "kind", "source", "confidence", "importance", "strength", "status", "created_at", "updated_at", "accessed_at", "access_count", "metadata"},
     "links": {"id", "from_id", "to_id", "relation", "created_at", "metadata"},
@@ -27,6 +29,7 @@ _REQUIRED: dict[str, set[str]] = {
     "events": {"id", "event_type", "memory_id", "payload", "created_at"},
     "state_facts": {"id", "subject", "state_key", "value", "memory_id", "is_current", "created_at", "updated_at", "valid_from", "valid_until"},
     "prospective_triggers": {"memory_id", "phrase", "category", "weight", "created_at"},
+    "branch_metadata": {"id", "kind", "name", "branch_id", "parent_branch_id", "base_memory_ids", "created_at"},
 }
 
 
@@ -164,6 +167,20 @@ def _validate(payload: Any) -> dict[str, list[dict[str, Any]]]:
         for field in ("phrase", "category", "created_at"): _require_string(row, field, "prospective_triggers")
         if not isinstance(row["weight"], (int, float)) or isinstance(row["weight"], bool) or not math.isfinite(row["weight"]) or not 0 <= row["weight"] <= 1:
             raise ImportValidationError("prospective_triggers.weight must be a finite number between 0 and 1")
+    if len(tables["branch_metadata"]) > 1:
+        raise ImportValidationError("branch_metadata may contain at most one row")
+    for row in tables["branch_metadata"]:
+        if row["id"] != 1 or row["kind"] not in {"snapshot", "fork"}:
+            raise ImportValidationError("branch_metadata is invalid")
+        for field in ("name", "branch_id", "created_at"):
+            _require_string(row, field, "branch_metadata")
+        _require_string(row, "parent_branch_id", "branch_metadata", nullable=True)
+        try:
+            base_ids = json.loads(row["base_memory_ids"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ImportValidationError("branch_metadata.base_memory_ids must be JSON") from exc
+        if not isinstance(base_ids, list) or any(not isinstance(item, str) for item in base_ids):
+            raise ImportValidationError("branch_metadata.base_memory_ids must be a string array")
     return tables
 
 
@@ -192,7 +209,7 @@ def import_json(source: str | Path, database: str | Path) -> Path:
     try:
         conn = store.connection()
         with conn:
-            for table in ("memories", "entities", "links", "memory_entities", "embeddings", "events", "state_facts", "prospective_triggers"):
+            for table in ("memories", "entities", "links", "memory_entities", "embeddings", "events", "state_facts", "prospective_triggers", "branch_metadata"):
                 rows = tables[table]
                 if not rows: continue
                 columns = sorted(_REQUIRED[table])
@@ -206,3 +223,102 @@ def import_json(source: str | Path, database: str | Path) -> Path:
         raise
     finally:
         store.close()
+
+
+def _branch_record(database: str | Path) -> dict[str, Any] | None:
+    store = BrainStore(database)
+    try:
+        row = store.connection().execute("SELECT * FROM branch_metadata WHERE id = 1").fetchone()
+        return dict(row) if row else None
+    finally:
+        store.close()
+
+
+def _write_branch_record(database: str | Path, *, kind: str, name: str, base_memory_ids: list[str], parent_branch_id: str | None) -> dict[str, Any]:
+    if kind not in {"snapshot", "fork"} or not name.strip():
+        raise ValueError("branch kind and non-empty name are required")
+    store = BrainStore(database)
+    try:
+        record = {"kind": kind, "name": name.strip(), "branch_id": str(uuid.uuid4()), "parent_branch_id": parent_branch_id,
+                  "base_memory_ids": json.dumps(sorted(base_memory_ids)), "created_at": datetime.now(UTC).isoformat(timespec="seconds")}
+        with store.connection() as conn:
+            conn.execute("INSERT OR REPLACE INTO branch_metadata (id, kind, name, branch_id, parent_branch_id, base_memory_ids, created_at) VALUES (1, ?, ?, ?, ?, ?, ?)",
+                         (record["kind"], record["name"], record["branch_id"], record["parent_branch_id"], record["base_memory_ids"], record["created_at"]))
+        return {**record, "base_memory_ids": json.loads(record["base_memory_ids"])}
+    finally:
+        store.close()
+
+
+def snapshot(database: str | Path, name: str, destination: str | Path) -> dict[str, Any]:
+    """Create a named, immutable-in-practice SQLite snapshot without overwriting."""
+    if _branch_record(database):
+        raise ValueError("snapshot the root brain, not an existing snapshot or fork")
+    target = backup(database, destination)
+    source = BrainStore(database)
+    try:
+        base_ids = [row["id"] for row in source.connection().execute("SELECT id FROM memories")]
+    finally:
+        source.close()
+    metadata = _write_branch_record(target, kind="snapshot", name=name, base_memory_ids=base_ids, parent_branch_id=None)
+    return {"snapshot": str(target), "metadata": metadata}
+
+
+def fork(snapshot_database: str | Path, name: str, destination: str | Path) -> dict[str, Any]:
+    """Create an isolated writable fork from a named snapshot; never overwrite."""
+    parent = _branch_record(snapshot_database)
+    if not parent or parent["kind"] not in {"snapshot", "fork"}:
+        raise ValueError("fork source must be a MemoryD snapshot or fork")
+    target = backup(snapshot_database, destination)
+    base_ids = json.loads(parent["base_memory_ids"])
+    metadata = _write_branch_record(target, kind="fork", name=name, base_memory_ids=base_ids, parent_branch_id=parent["branch_id"])
+    return {"fork": str(target), "metadata": metadata}
+
+
+def merge(fork_database: str | Path, database: str | Path) -> dict[str, Any]:
+    """Import only new fork knowledge; conflicting current state is reported, never overwritten."""
+    metadata = _branch_record(fork_database)
+    if not metadata or metadata["kind"] != "fork":
+        raise ValueError("merge source must be a MemoryD fork")
+    if _branch_record(database):
+        raise ValueError("merge destination must be the root brain, not a snapshot or fork")
+    base_ids = set(json.loads(metadata["base_memory_ids"]))
+    source, target = BrainStore(fork_database), BrainStore(database)
+    try:
+        source_conn, target_conn = source.connection(), target.connection()
+        source_memories = {row["id"]: dict(row) for row in source_conn.execute("SELECT * FROM memories")}
+        candidate_ids = set(source_memories) - base_ids
+        target_ids = {row["id"] for row in target_conn.execute("SELECT id FROM memories")}
+        new_ids = sorted(candidate_ids - target_ids)
+        if not new_ids:
+            return {"merged_memory_ids": [], "state_conflicts": [], "already_present": sorted(candidate_ids), "fork": metadata["branch_id"]}
+        marks = ",".join("?" for _ in new_ids)
+        state_conflicts: list[dict[str, str]] = []
+        with target_conn:
+            columns = sorted(_REQUIRED["memories"])
+            target_conn.executemany(f"INSERT INTO memories ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                [tuple(source_memories[item][key] for key in columns) for item in new_ids])
+            target_conn.executemany("INSERT INTO memory_fts(id, content) VALUES (?, ?)", [(item, source_memories[item]["content"]) for item in new_ids])
+            entity_rows = source_conn.execute(f"SELECT DISTINCT e.* FROM entities e JOIN memory_entities me ON me.entity_id=e.id WHERE me.memory_id IN ({marks})", new_ids).fetchall()
+            target_conn.executemany("INSERT OR IGNORE INTO entities (id, name, normalized_name, kind, created_at) VALUES (?, ?, ?, ?, ?)", [tuple(row) for row in entity_rows])
+            target_conn.executemany("INSERT OR IGNORE INTO memory_entities (memory_id, entity_id, created_at) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM entities WHERE id = ?)",
+                [(row["memory_id"], row["entity_id"], row["created_at"], row["entity_id"]) for row in source_conn.execute(f"SELECT * FROM memory_entities WHERE memory_id IN ({marks})", new_ids)])
+            for table, cols in (("embeddings", ("memory_id", "provider", "dimensions", "vector", "created_at")), ("prospective_triggers", ("memory_id", "phrase", "category", "weight", "created_at"))):
+                rows = source_conn.execute(f"SELECT * FROM {table} WHERE memory_id IN ({marks})", new_ids).fetchall()
+                target_conn.executemany(f"INSERT OR IGNORE INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})", [tuple(row[key] for key in cols) for row in rows])
+            all_target_ids = target_ids | set(new_ids)
+            for row in source_conn.execute(f"SELECT * FROM links WHERE from_id IN ({marks})", new_ids):
+                if row["to_id"] in all_target_ids:
+                    target_conn.execute("INSERT OR IGNORE INTO links (id, from_id, to_id, relation, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)", tuple(row))
+            for row in source_conn.execute(f"SELECT * FROM state_facts WHERE memory_id IN ({marks})", new_ids):
+                current = target_conn.execute("SELECT 1 FROM state_facts WHERE subject=? AND state_key=? AND is_current=1", (row["subject"], row["state_key"])).fetchone()
+                if row["is_current"] and current:
+                    state_conflicts.append({"subject": row["subject"], "key": row["state_key"], "memory_id": row["memory_id"]})
+                    continue
+                target_conn.execute("INSERT OR IGNORE INTO state_facts (id, subject, state_key, value, memory_id, is_current, created_at, updated_at, valid_from, valid_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tuple(row))
+            for row in source_conn.execute(f"SELECT * FROM events WHERE memory_id IN ({marks})", new_ids):
+                target_conn.execute("INSERT OR IGNORE INTO events (id, event_type, memory_id, payload, created_at) VALUES (?, ?, ?, ?, ?)", tuple(row))
+            target_conn.execute("INSERT INTO events (id, event_type, memory_id, payload, created_at) VALUES (?, 'fork_merged', NULL, ?, datetime('now'))",
+                (str(uuid.uuid4()), json.dumps({"fork_id": metadata["branch_id"], "fork_name": metadata["name"], "memory_ids": new_ids, "state_conflicts": state_conflicts}, sort_keys=True)))
+        return {"merged_memory_ids": new_ids, "state_conflicts": state_conflicts, "already_present": sorted(candidate_ids & target_ids), "fork": metadata["branch_id"]}
+    finally:
+        source.close(); target.close()

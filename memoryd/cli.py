@@ -8,7 +8,7 @@ from typing import Any
 from .doctor import diagnose
 from .runtime import MemoryRuntime
 from .mcp import serve_stdio
-from .ops import backup, export_json, import_json
+from .ops import backup, export_json, fork, import_json, merge, snapshot
 from .server import serve
 from .ui import serve as serve_ui
 
@@ -63,6 +63,15 @@ def main() -> None:
     export_command.add_argument("destination")
     import_command = commands.add_parser("import", help="create a new database from a validated JSON export")
     import_command.add_argument("source")
+    snapshot_command = commands.add_parser("snapshot", help="create a named SQLite snapshot without overwriting")
+    snapshot_command.add_argument("name")
+    snapshot_command.add_argument("destination")
+    fork_command = commands.add_parser("fork", help="create an isolated writable brain from a snapshot")
+    fork_command.add_argument("snapshot_database")
+    fork_command.add_argument("name")
+    fork_command.add_argument("destination")
+    merge_command = commands.add_parser("merge", help="merge new fork knowledge; conflicting current state is never overwritten")
+    merge_command.add_argument("fork_database")
     commands.add_parser("doctor", help="run read-only brain integrity and consistency checks")
     commands.add_parser("beliefs", help="show direct evidence-backed current beliefs")
     explain = commands.add_parser("explain", help="show the evidence for one direct belief")
@@ -77,6 +86,12 @@ def main() -> None:
         print(json.dumps({"backup": str(backup(args.database, args.destination))}, indent=2)); return
     if args.command == "export":
         print(json.dumps({"export": str(export_json(args.database, args.destination))}, indent=2)); return
+    if args.command == "snapshot":
+        print(json.dumps(snapshot(args.database, args.name, args.destination), indent=2)); return
+    if args.command == "fork":
+        print(json.dumps(fork(args.snapshot_database, args.name, args.destination), indent=2)); return
+    if args.command == "merge":
+        print(json.dumps(merge(args.fork_database, args.database), indent=2)); return
     if args.command == "doctor":
         print(json.dumps(diagnose(args.database), indent=2)); return
     runtime = MemoryRuntime(Path(args.database))

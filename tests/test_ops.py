@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from memoryd.ops import ImportValidationError, backup, export_json, import_json
+from memoryd.ops import ImportValidationError, backup, export_json, fork, import_json, merge, snapshot
 from memoryd.runtime import MemoryRuntime
 
 
@@ -64,3 +64,37 @@ def test_export_never_overwrites_destination(tmp_path):
     target.write_text("keep", encoding="utf-8")
     with pytest.raises(FileExistsError): export_json(runtime.store.path, target)
     assert target.read_text(encoding="utf-8") == "keep"
+
+
+def test_snapshot_fork_and_merge_preserve_new_knowledge_without_overwriting_state(tmp_path):
+    main = MemoryRuntime(tmp_path / "main.db")
+    main.remember("Project: database = SQLite.", kind="state")
+    snap = snapshot(main.store.path, "before-experiment", tmp_path / "snapshot.db")
+    assert snap["metadata"]["kind"] == "snapshot"
+    forked = fork(snap["snapshot"], "postgres-experiment", tmp_path / "experiment.db")
+    assert forked["metadata"]["kind"] == "fork"
+
+    experiment = MemoryRuntime(forked["fork"])
+    decision = experiment.remember("PostgreSQL needs a load test before adoption.", kind="decision")
+    experiment.remember("Project: database = PostgreSQL.", kind="state")
+    main.remember("Project: database = MySQL.", kind="state")
+
+    outcome = merge(forked["fork"], main.store.path)
+    assert decision.id in outcome["merged_memory_ids"]
+    assert len(outcome["state_conflicts"]) == 1
+    assert outcome["state_conflicts"][0]["subject"] == "Project"
+    assert outcome["state_conflicts"][0]["key"] == "database"
+    assert main.get(decision.id)["content"] == "PostgreSQL needs a load test before adoption."
+    assert main.state(subject="Project", key="database")[0]["value"] == "MySQL"
+    assert any(event["event_type"] == "fork_merged" for event in main.events())
+
+
+def test_branching_refuses_overwrites_and_non_fork_merge_sources(tmp_path):
+    main = MemoryRuntime(tmp_path / "main.db")
+    main.remember("Project: stage = testing.", kind="state")
+    target = tmp_path / "snapshot.db"
+    snapshot(main.store.path, "testing", target)
+    with pytest.raises(FileExistsError):
+        snapshot(main.store.path, "testing", target)
+    with pytest.raises(ValueError, match="fork"):
+        merge(target, main.store.path)

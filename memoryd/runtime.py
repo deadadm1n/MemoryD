@@ -16,6 +16,7 @@ from .entities import extract_entities
 from .models import Memory, RecallResult
 from .prospective import derive_triggers, score_relevance
 from .reflection import propose as reflection_proposals
+from .ops import fork as fork_brain, merge as merge_fork, snapshot as snapshot_brain
 from .store import BrainStore
 
 
@@ -311,3 +312,12 @@ class MemoryRuntime:
 
     def state(self, *, subject: str | None = None, key: str | None = None, history: bool = False, at: str | None = None) -> list[dict[str, Any]]:
         return self.store.state(subject, key, history, at)
+
+    def snapshot(self, name: str, destination: str) -> dict[str, Any]:
+        return snapshot_brain(self.store.path, name, destination)
+
+    def fork(self, snapshot_database: str, name: str, destination: str) -> dict[str, Any]:
+        return fork_brain(snapshot_database, name, destination)
+
+    def merge(self, fork_database: str) -> dict[str, Any]:
+        return merge_fork(fork_database, self.store.path)

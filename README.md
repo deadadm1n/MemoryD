@@ -57,6 +57,7 @@ The point is not to return ten search results. The point is to surface the right
 - Generates prospective triggers so a memory can reappear when a future situation resembles its likely relevance.
 - Derives conservative beliefs from direct active assertions, with exact evidence IDs and explanations.
 - Supports review-first reflection and explicit, non-destructive consolidation.
+- Creates named snapshots and isolated forks for agent experiments, then merges only branch-new knowledge back into the main brain.
 - Runs as a CLI, REST daemon, MCP server, and small read-only local inspector.
 - Includes health checks, online SQLite backup, validated JSON export/import, and a fixed evaluation corpus.
 
@@ -114,6 +115,7 @@ memory_get          memory_link         memory_timeline
 memory_forget       memory_state        memory_events
 memory_consolidate  memory_reflect      memory_observe
 memory_beliefs      memory_explain
+memory_snapshot     memory_fork         memory_merge
 ```
 
 Write tools are explicit. `memory_reflect` only proposes possible consolidation, open-question, or duplicate reviews; it never mutates the brain.
@@ -188,6 +190,7 @@ memoryd --database brain.db explain --subject MemoryD --key database
 ```text
 POST /remember       POST /recall        POST /context
 POST /link           POST /consolidate   POST /reflect
+POST /snapshot       POST /fork           POST /merge
 POST /forget/:id
 GET  /memories/:id   GET  /timeline      GET  /state
 GET  /events         GET  /beliefs       GET  /explain
@@ -215,6 +218,19 @@ memoryd --database C:\restored\brain.db import C:\backups\brain.json
 ```
 
 Backup and export refuse to overwrite destinations. Import validates memory IDs, relationships, vectors, state facts, and event history before creating a new database.
+
+## Explore without contaminating a brain
+
+Snapshots and forks make an experiment a separate portable brain. A merge only imports memories created in that fork. It never replaces the main brain's current state automatically: conflicting state facts are returned for review and the main value stays in place.
+
+```powershell
+memoryd --database brain.db snapshot before-auth C:\experiments\before-auth.db
+memoryd fork C:\experiments\before-auth.db auth-redesign C:\experiments\auth-redesign.db
+memoryd --database C:\experiments\auth-redesign.db remember "Auth flow needs a migration plan." --kind decision
+memoryd --database brain.db merge C:\experiments\auth-redesign.db
+```
+
+Snapshot, fork, and merge destinations must be new files. This is a deliberately conservative first branching model: it preserves new knowledge and provenance, while leaving conflict resolution explicit.
 
 ## Quality gates
 
@@ -246,6 +262,7 @@ Provider names are stored with their vectors, so embeddings from different model
 
 - Benchmark and document a recommended real local embedding provider.
 - Add configurable background scheduling for reviewable reflection cycles.
+- Add native memory scopes (private, shared, project, agent, and person).
 - Expand retrieval evaluation with real-world project corpora.
 - Add secure multi-user and remote deployment modes without weakening the local-first default.
 

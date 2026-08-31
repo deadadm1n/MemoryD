@@ -67,6 +67,12 @@ class MemoryHandler(BaseHTTPRequestHandler):
                 self._json(self.runtime.consolidate(limit=int(body.get("limit", 200)))); return
             if self.path == "/reflect":
                 self._json(self.runtime.reflect(limit=int(body.get("limit", 200)))); return
+            if self.path == "/snapshot":
+                self._json(self.runtime.snapshot(body["name"], body["destination"]), HTTPStatus.CREATED); return
+            if self.path == "/fork":
+                self._json(self.runtime.fork(body["snapshot_database"], body["name"], body["destination"]), HTTPStatus.CREATED); return
+            if self.path == "/merge":
+                self._json(self.runtime.merge(body["fork_database"])); return
             if self.path == "/link":
                 self.runtime.link(body["from_id"], body["to_id"], body["relation"]); self._json({"status": "linked"}); return
             if self.path.startswith("/forget/"):

@@ -127,6 +127,7 @@ def test_mcp_stdio_lifecycle_and_all_memory_tools(tmp_path):
     assert {tool["name"] for tool in replies[1]["result"]["tools"]} == {
         "memory_remember", "memory_recall", "memory_context", "memory_get", "memory_link", "memory_timeline", "memory_forget",
         "memory_consolidate", "memory_events", "memory_state", "memory_reflect", "memory_observe", "memory_beliefs", "memory_explain",
+        "memory_snapshot", "memory_fork", "memory_merge",
     }
     first_id = replies[2]["result"]["structuredContent"]["id"]
     second_id = replies[3]["result"]["structuredContent"]["id"]
