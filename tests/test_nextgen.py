@@ -13,8 +13,8 @@ def test_schema_settings_and_deduplication(tmp_path):
     assert runtime.store.stats()["memories"] == 1
     assert runtime.store.get(first.id).access_count == 1
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
-        assert connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()[0] == "7"
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()[0] == "9"
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
 
 

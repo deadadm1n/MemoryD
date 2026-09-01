@@ -31,7 +31,7 @@ class MemoryHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         path = parsed.path
         params = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
-        if path == "/health": self._json({"status": "ok", "stats": self.runtime.store.stats()}); return
+        if path == "/health": self._json({"status": "ok", "stats": self.runtime.stats()}); return
         if path == "/timeline": self._json({"memories": self.runtime.timeline(limit=int(params.get("limit", 50)))}); return
         if path == "/events": self._json({"events": self.runtime.events(limit=int(params.get("limit", 50)))}); return
         if path == "/beliefs": self._json(self.runtime.beliefs()); return

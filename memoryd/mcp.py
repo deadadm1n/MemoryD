@@ -28,7 +28,7 @@ TOOLS = [
          "kind": {"type": "string", "enum": ["decision", "state", "procedural", "semantic", "speculation"]},
          "confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": .8},
          "importance": {"type": "number", "minimum": 0, "maximum": 1, "default": .5},
-         "metadata": {"type": "object"}, "supersedes": {"type": "string"}}, ["content"]),
+         "metadata": {"type": "object"}, "supersedes": {"type": "string"}, "scope": {"type": "string", "default": "shared"}}, ["content"]),
      "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
     {"name": "memory_recall", "title": "Recall", "description": "Find relevant active memories with hybrid lexical, importance, confidence, recency, and reinforcement scoring.",
      "inputSchema": _schema({"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
@@ -62,7 +62,7 @@ TOOLS = [
      "inputSchema": _schema({"limit": {"type": "integer", "minimum": 2, "maximum": 1000, "default": 200}}),
      "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
     {"name": "memory_observe", "title": "Observe experience", "description": "Analyze an experience and store only conservative durable candidates; ordinary chatter is ignored.",
-     "inputSchema": _schema({"content": {"type": "string"}, "actor": {"type": "string"}, "context": {"type": "object"}, "source": {"type": "string", "default": "observation"}}, ["content"]),
+     "inputSchema": _schema({"content": {"type": "string"}, "actor": {"type": "string"}, "context": {"type": "object"}, "source": {"type": "string", "default": "observation"}, "scope": {"type": "string", "default": "shared"}}, ["content"]),
      "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
     {"name": "memory_beliefs", "title": "Evidence-backed beliefs", "description": "Read conservative direct beliefs and unresolved conflicts with their source memory IDs.",
      "inputSchema": _schema({}),
@@ -140,7 +140,7 @@ class MCPServer:
         if method == "initialize":
             self.initialized = False
             return self._response(message_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}},
-                                                "serverInfo": {"name": "memoryd", "version": "0.6.0"}})
+                                                "serverInfo": {"name": "memoryd", "version": "0.7.0"}})
         if method == "ping":
             return self._response(message_id, {})
         if not self.initialized:

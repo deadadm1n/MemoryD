@@ -7,6 +7,7 @@ from typing import Any
 
 from .doctor import diagnose
 from .runtime import MemoryRuntime
+from .scopes import ScopeContext
 from .mcp import serve_stdio
 from .ops import backup, export_json, fork, import_json, merge, snapshot
 from .server import serve
@@ -20,6 +21,9 @@ def _metadata(raw: str | None) -> dict[str, Any] | None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="memoryd", description="Portable model-independent memory runtime")
     parser.add_argument("--database", default="brain.db", help="path to the portable SQLite brain")
+    parser.add_argument("--principal", help="trusted principal identity for person/private scoped memory")
+    parser.add_argument("--project", help="trusted project identity for project-scoped memory")
+    parser.add_argument("--agent", help="trusted agent identity for agent-scoped memory")
     commands = parser.add_subparsers(dest="command", required=True)
     daemon = commands.add_parser("serve", help="run REST daemon")
     daemon.add_argument("--host", default="127.0.0.1")
@@ -36,10 +40,12 @@ def main() -> None:
     remember.add_argument("--importance", type=float, default=.5)
     remember.add_argument("--metadata")
     remember.add_argument("--supersedes")
+    remember.add_argument("--scope", default="shared")
     observe = commands.add_parser("observe", help="analyze an experience and store only durable candidates")
     observe.add_argument("content")
     observe.add_argument("--actor")
     observe.add_argument("--context", help="JSON object describing the experience context")
+    observe.add_argument("--scope", default="shared")
     recall = commands.add_parser("recall", help="retrieve relevant memories")
     recall.add_argument("query")
     recall.add_argument("--limit", type=int, default=10)
@@ -94,16 +100,17 @@ def main() -> None:
         print(json.dumps(merge(args.fork_database, args.database), indent=2)); return
     if args.command == "doctor":
         print(json.dumps(diagnose(args.database), indent=2)); return
-    runtime = MemoryRuntime(Path(args.database))
+    runtime = MemoryRuntime(Path(args.database), scope_context=ScopeContext(
+        principal_id=args.principal, project_id=args.project, agent_id=args.agent))
     if args.command == "serve": serve(runtime, args.host, args.port); return
     if args.command == "ui": serve_ui(runtime, args.host, args.port); return
     if args.command == "mcp": serve_stdio(runtime); return
     if args.command == "remember":
         print(json.dumps(runtime.remember(args.content, source=args.source, kind=args.kind,
               confidence=args.confidence, importance=args.importance, metadata=_metadata(args.metadata),
-              supersedes=args.supersedes).to_dict(), indent=2)); return
+              supersedes=args.supersedes, scope=args.scope).to_dict(), indent=2)); return
     if args.command == "observe":
-        print(json.dumps(runtime.observe(args.content, actor=args.actor, context=_metadata(args.context)), indent=2)); return
+        print(json.dumps(runtime.observe(args.content, actor=args.actor, context=_metadata(args.context), scope=args.scope), indent=2)); return
     if args.command == "recall": print(json.dumps([r.to_dict() for r in runtime.recall(args.query, limit=args.limit)], indent=2)); return
     if args.command == "context": print(json.dumps(runtime.context(args.query, budget=args.budget), indent=2)); return
     if args.command == "consolidate": print(json.dumps(runtime.consolidate(limit=args.limit), indent=2)); return

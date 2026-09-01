@@ -15,19 +15,20 @@ from pathlib import Path
 from typing import Any
 
 from .store import BrainStore
+from .scopes import validate_scope
 
 
 FORMAT = "memoryd-export"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 3
 TABLES = ("memories", "links", "entities", "memory_entities", "embeddings", "events", "state_facts", "prospective_triggers", "branch_metadata")
 _REQUIRED: dict[str, set[str]] = {
-    "memories": {"id", "content", "kind", "source", "confidence", "importance", "strength", "status", "created_at", "updated_at", "accessed_at", "access_count", "metadata"},
+    "memories": {"id", "content", "kind", "source", "confidence", "importance", "strength", "status", "created_at", "updated_at", "accessed_at", "access_count", "scope", "metadata"},
     "links": {"id", "from_id", "to_id", "relation", "created_at", "metadata"},
     "entities": {"id", "name", "normalized_name", "kind", "created_at"},
     "memory_entities": {"memory_id", "entity_id", "created_at"},
     "embeddings": {"memory_id", "provider", "dimensions", "vector", "created_at"},
-    "events": {"id", "event_type", "memory_id", "payload", "created_at"},
-    "state_facts": {"id", "subject", "state_key", "value", "memory_id", "is_current", "created_at", "updated_at", "valid_from", "valid_until"},
+    "events": {"id", "event_type", "memory_id", "payload", "created_at", "scope"},
+    "state_facts": {"id", "subject", "state_key", "value", "memory_id", "is_current", "created_at", "updated_at", "valid_from", "valid_until", "scope"},
     "prospective_triggers": {"memory_id", "phrase", "category", "weight", "created_at"},
     "branch_metadata": {"id", "kind", "name", "branch_id", "parent_branch_id", "base_memory_ids", "created_at"},
 }
@@ -99,9 +100,13 @@ def _require_string(row: dict[str, Any], field: str, table: str, *, nullable: bo
 
 
 def _validate(payload: Any) -> dict[str, list[dict[str, Any]]]:
-    if not isinstance(payload, dict) or payload.get("format") != FORMAT or payload.get("version") != FORMAT_VERSION:
+    if not isinstance(payload, dict) or payload.get("format") != FORMAT or payload.get("version") not in {1, 2, FORMAT_VERSION}:
         raise ImportValidationError("unsupported memoryd export format")
     tables = payload.get("tables")
+    if payload.get("version") in {1, 2} and isinstance(tables, dict):
+        for row in tables.get("memories", []): row.setdefault("scope", "shared")
+        for row in tables.get("state_facts", []): row.setdefault("scope", "shared")
+        for row in tables.get("events", []): row.setdefault("scope", "shared")
     if not isinstance(tables, dict) or set(tables) != set(TABLES):
         raise ImportValidationError("export must contain exactly the supported tables")
     for table in TABLES:
@@ -118,6 +123,9 @@ def _validate(payload: Any) -> dict[str, list[dict[str, Any]]]:
     for row in memories:
         for field in ("id", "content", "kind", "source", "status", "created_at", "updated_at"):
             _require_string(row, field, "memories")
+        _require_string(row, "scope", "memories")
+        try: validate_scope(row["scope"])
+        except ValueError as exc: raise ImportValidationError("memories.scope is invalid") from exc
         _require_string(row, "accessed_at", "memories", nullable=True)
         if not isinstance(row["access_count"], int) or row["access_count"] < 0:
             raise ImportValidationError("memories.access_count must be a non-negative integer")
@@ -150,16 +158,20 @@ def _validate(payload: Any) -> dict[str, list[dict[str, Any]]]:
         except (TypeError, json.JSONDecodeError) as exc: raise ImportValidationError("embeddings.vector must be JSON") from exc
         if not isinstance(vector, list) or len(vector) != row["dimensions"] or any(not isinstance(x, (int, float)) or isinstance(x, bool) or not math.isfinite(x) for x in vector): raise ImportValidationError("embeddings.vector dimensions are invalid")
     for row in tables["events"]:
-        for field in ("id", "event_type", "created_at"): _require_string(row, field, "events")
+        for field in ("id", "event_type", "created_at", "scope"): _require_string(row, field, "events")
+        try: validate_scope(row["scope"])
+        except ValueError as exc: raise ImportValidationError("events.scope is invalid") from exc
         if row["memory_id"] is not None and row["memory_id"] not in ids: raise ImportValidationError("events reference an unknown memory")
         _json_object(row["payload"], "events.payload")
-    current: set[tuple[str, str]] = set()
+    current: set[tuple[str, str, str]] = set()
     for row in tables["state_facts"]:
-        for field in ("id", "subject", "state_key", "value", "memory_id", "created_at", "updated_at", "valid_from"): _require_string(row, field, "state_facts")
+        for field in ("id", "subject", "state_key", "value", "memory_id", "created_at", "updated_at", "valid_from", "scope"): _require_string(row, field, "state_facts")
+        try: validate_scope(row["scope"])
+        except ValueError as exc: raise ImportValidationError("state_facts.scope is invalid") from exc
         _require_string(row, "valid_until", "state_facts", nullable=True)
         if row["memory_id"] not in ids: raise ImportValidationError("state_facts reference an unknown memory")
         if row["is_current"] not in (0, 1): raise ImportValidationError("state_facts.is_current must be 0 or 1")
-        pair = (row["subject"], row["state_key"])
+        pair = (row["scope"], row["subject"], row["state_key"])
         if row["is_current"] and pair in current: raise ImportValidationError("state_facts has duplicate current facts")
         if row["is_current"]: current.add(pair)
     for row in tables["prospective_triggers"]:
@@ -310,14 +322,14 @@ def merge(fork_database: str | Path, database: str | Path) -> dict[str, Any]:
                 if row["to_id"] in all_target_ids:
                     target_conn.execute("INSERT OR IGNORE INTO links (id, from_id, to_id, relation, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)", tuple(row))
             for row in source_conn.execute(f"SELECT * FROM state_facts WHERE memory_id IN ({marks})", new_ids):
-                current = target_conn.execute("SELECT 1 FROM state_facts WHERE subject=? AND state_key=? AND is_current=1", (row["subject"], row["state_key"])).fetchone()
+                current = target_conn.execute("SELECT 1 FROM state_facts WHERE scope=? AND subject=? AND state_key=? AND is_current=1", (row["scope"], row["subject"], row["state_key"])).fetchone()
                 if row["is_current"] and current:
                     state_conflicts.append({"subject": row["subject"], "key": row["state_key"], "memory_id": row["memory_id"]})
                     continue
-                target_conn.execute("INSERT OR IGNORE INTO state_facts (id, subject, state_key, value, memory_id, is_current, created_at, updated_at, valid_from, valid_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tuple(row))
+                target_conn.execute("INSERT OR IGNORE INTO state_facts (id, subject, state_key, value, memory_id, is_current, created_at, updated_at, valid_from, valid_until, scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tuple(row))
             for row in source_conn.execute(f"SELECT * FROM events WHERE memory_id IN ({marks})", new_ids):
-                target_conn.execute("INSERT OR IGNORE INTO events (id, event_type, memory_id, payload, created_at) VALUES (?, ?, ?, ?, ?)", tuple(row))
-            target_conn.execute("INSERT INTO events (id, event_type, memory_id, payload, created_at) VALUES (?, 'fork_merged', NULL, ?, datetime('now'))",
+                target_conn.execute("INSERT OR IGNORE INTO events (id, event_type, memory_id, payload, created_at, scope) VALUES (?, ?, ?, ?, ?, ?)", tuple(row))
+            target_conn.execute("INSERT INTO events (id, event_type, memory_id, payload, created_at, scope) VALUES (?, 'fork_merged', NULL, ?, datetime('now'), 'shared')",
                 (str(uuid.uuid4()), json.dumps({"fork_id": metadata["branch_id"], "fork_name": metadata["name"], "memory_ids": new_ids, "state_conflicts": state_conflicts}, sort_keys=True)))
         return {"merged_memory_ids": new_ids, "state_conflicts": state_conflicts, "already_present": sorted(candidate_ids & target_ids), "fork": metadata["branch_id"]}
     finally:

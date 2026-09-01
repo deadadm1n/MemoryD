@@ -58,6 +58,7 @@ The point is not to return ten search results. The point is to surface the right
 - Derives conservative beliefs from direct active assertions, with exact evidence IDs and explanations.
 - Supports review-first reflection and explicit, non-destructive consolidation.
 - Creates named snapshots and isolated forks for agent experiments, then merges only branch-new knowledge back into the main brain.
+- Separates knowledge into native `world`, `shared`, `project`, `person`, `agent`, and `private` scopes.
 - Runs as a CLI, REST daemon, MCP server, and small read-only local inspector.
 - Includes health checks, online SQLite backup, validated JSON export/import, and a fixed evaluation corpus.
 
@@ -165,6 +166,17 @@ For arbitrary keys, make the state assignment explicit in metadata:
 }
 ```
 
+### Give agents the right scope
+
+MemoryD uses a fixed runtime identity, rather than allowing each request to claim another user's private scope. A default runtime sees and writes `shared` memory; add trusted identity flags to use project, agent, person, or private memory.
+
+```powershell
+memoryd --database brain.db --project MemoryD --agent coder remember "The migration needs a dry run." --scope project:MemoryD
+memoryd --database brain.db --principal Doug remember "Prefers concise release notes." --scope private:Doug
+```
+
+The valid scopes are `world`, `shared`, `project:<id>`, `person:<id>`, `agent:<id>`, and `private:<id>`. Scopes are visibility controls inside MemoryD, not a replacement for filesystem permissions or authentication.
+
 ### Retrieve the right context
 
 ```powershell
@@ -256,6 +268,7 @@ Provider names are stored with their vectors, so embeddings from different model
 - **Provenance first:** derived knowledge links back to its sources.
 - **Local-first:** no cloud account or API key is required for the core runtime.
 - **Review before autonomy:** reflection proposes; explicit tools make changes.
+- **Scoped by default:** project and private knowledge never appear unless the runtime has that identity.
 - **Small interface, deep internals:** agents get `remember`, `recall`, `context`, and a few supporting operations.
 
 ## Roadmap
